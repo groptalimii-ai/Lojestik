@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Weekly, so a vulnerability disclosed in a dependency AFTER the last
+    # push still gets caught, not just at the next code change.
+    - cron: "0 6 * * 1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Install bot dependencies
+        # tests/test_keepalive.py imports from bot.* -- keep both
+        # requirement files installed so the full suite can actually run.
+        run: pip install -r bot/requirements.txt
+
+      - name: Compile-check all Python files
+        run: python -m py_compile $(find . -name "*.py" -not -path "./.git/*")
+
+      - name: Run tests
+        env:
+          # Dummy values -- most test files here don't touch a real
+          # database or Redis, but Settings() still needs something to
+          # construct.
+          JWT_SECRET: ci-test-secret
+          BOT_SERVICE_SECRET: ci-test-bot-secret
+          ANTHROPIC_API_KEY: ci-test-key
+          TELEGRAM_BOT_TOKEN: ci-test-token
+          DATABASE_URL: postgresql+asyncpg://user:pass@localhost/db
+          REDIS_URL: redis://localhost:6379/0
+        run: PYTHONPATH=backend python -m pytest tests/ -v
+
+  dependency-audit:
+    # Separate job, not a step in `test` -- a newly-disclosed
+    # vulnerability shouldn't make an unrelated code change look broken;
+    # it should show up as its own clearly-labeled failing check.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pip-audit
+        run: pip install pip-audit
+      - name: Audit backend dependencies for known vulnerabilities
+        run: pip-audit -r backend/requirements.txt
+      - name: Audit bot dependencies for known vulnerabilities
+        run: pip-audit -r bot/requirements.txt
